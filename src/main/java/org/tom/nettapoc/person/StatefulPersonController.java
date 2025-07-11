@@ -1,12 +1,11 @@
 package org.tom.nettapoc.person;
 
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.tom.nettapoc.generic.VersionedExternalService;
-import org.tom.nettapoc.generic.VersionedServiceResponse;
+import org.tom.nettapoc.generic.CacheDelta;
 
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
@@ -50,11 +49,12 @@ public class StatefulPersonController implements VersionedExternalService<Person
 
     public void addOrUpdatePerson(Person person) {
         Instant newVersion = nextVersion();
-        Person updatedPerson = new Person(person.id(), person.name(), newVersion);
-        personStore.put(person.id(), updatedPerson);
-        deletedPersons.remove(person.id());
+        Long id = Long.valueOf(person.getId());
+        Person updatedPerson = new Person(id, person.getName(), newVersion);
+        personStore.put(id, updatedPerson);
+        deletedPersons.remove(id);
 
-        System.out.printf("[Version %s] Added/Updated person %d (%s)%n", newVersion, updatedPerson.id(), updatedPerson.name());
+        System.out.printf("[Version %s] Added/Updated person %d (%s)%n", newVersion, updatedPerson.getId(), updatedPerson.getName());
     }
 
     public void deletePerson(Long personId) {
@@ -68,11 +68,11 @@ public class StatefulPersonController implements VersionedExternalService<Person
 
     @Override
     @GetMapping("/persons")
-    public VersionedServiceResponse<Person, String> fetchUpdates(@RequestParam(defaultValue = "1970-01-01T00:00:00Z") String dataVersionStr) {
+    public CacheDelta<Person, String> fetchUpdates(@RequestParam(defaultValue = "1970-01-01T00:00:00Z") String dataVersionStr) {
         Instant dataVersion = Instant.parse(dataVersionStr);
 
         List<Person> updated = personStore.values().stream()
-                .filter(p -> p.dataVersion().isAfter(dataVersion))
+                .filter(p -> Instant.parse(p.getDataVersion()).isAfter(dataVersion))
                 .collect(Collectors.toList());
 
         List<String> deleted = deletedPersons.entrySet().stream()
@@ -88,7 +88,7 @@ public class StatefulPersonController implements VersionedExternalService<Person
 
         simulateChanges();
 
-        return new VersionedServiceResponse<>(updated, deleted, nextVerStr);
+        return new CacheDelta<>(updated, deleted, nextVerStr);
     }
 
     public void simulateChanges() {

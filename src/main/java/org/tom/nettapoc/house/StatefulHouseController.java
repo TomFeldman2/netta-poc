@@ -1,12 +1,11 @@
 package org.tom.nettapoc.house;
 
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.tom.nettapoc.generic.VersionedExternalService;
-import org.tom.nettapoc.generic.VersionedServiceResponse;
+import org.tom.nettapoc.generic.CacheDelta;
 
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -55,12 +54,12 @@ public class StatefulHouseController implements VersionedExternalService<House, 
      */
     public void addOrUpdateHouse(House house) {
         int newVersion = currentVersion.incrementAndGet();
-        House updatedHouse = new House(house.id(), house.personIds(), newVersion);
-        houseStore.put(house.id(), updatedHouse);
-        deletedHouses.remove(house.id()); // If previously deleted, remove from deleted map
+        House updatedHouse = new House(house.getId(), house.getPersonIds(), newVersion);
+        houseStore.put(house.getId(), updatedHouse);
+        deletedHouses.remove(house.getId()); // If previously deleted, remove from deleted map
 
         System.out.printf("[Version %d] Added/Updated house %s with persons %s%n",
-                newVersion, updatedHouse.id(), updatedHouse.personIds());
+                newVersion, updatedHouse.getId(), updatedHouse.getPersonIds());
     }
 
     /**
@@ -82,7 +81,7 @@ public class StatefulHouseController implements VersionedExternalService<House, 
      */
     @Override
     @GetMapping("/houses")
-    public VersionedServiceResponse<House, Integer> fetchUpdates(@RequestParam(defaultValue = "0") Integer dataVersion) {
+    public CacheDelta<House, Integer> fetchUpdates(@RequestParam(defaultValue = "0") Integer dataVersion) {
         List<House> updated = houseStore.values().stream()
                 .filter(h -> h.getDataVersion() > dataVersion)
                 .collect(Collectors.toList());
@@ -99,7 +98,7 @@ public class StatefulHouseController implements VersionedExternalService<House, 
 
         simulateChanges();
 
-        return new VersionedServiceResponse<>(updated, deleted, nextVersion);
+        return new CacheDelta<>(updated, deleted, nextVersion);
     }
 
     /**

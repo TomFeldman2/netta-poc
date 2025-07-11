@@ -8,5 +8,5 @@ public interface VersionedExternalService<E extends VersionedEntity<V>, V extend
      * @param dataVersion The version to fetch updates since.
      * @return VersionedServiceResponse containing updated entities, deleted entity IDs, and next version.
      */
-    VersionedServiceResponse<E, V> fetchUpdates(V dataVersion);
+    CacheDelta<E, V> fetchUpdates(V dataVersion);
 }
