@@ -4,7 +4,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -17,154 +16,197 @@ class VersionedCacheTest {
         cache = new VersionedCache<>();
     }
 
-    private CacheDelta<TestEntity, Integer> deltaWithData(List<TestEntity> data, Integer version) {
-        return new CacheDelta<>(data, Collections.emptyList(), version);
-    }
-
-    private CacheDelta<TestEntity, Integer> deltaWithDeletes(List<String> deleted, Integer version) {
-        return new CacheDelta<>(Collections.emptyList(), deleted, version);
-    }
-
-    private CacheDelta<TestEntity, Integer> deltaWithDataAndDeletes(List<TestEntity> data, List<String> deleted, Integer version) {
+    private CacheDelta<TestEntity, Integer> deltaWithData(List<TestEntity> data, List<String> deleted, Integer version) {
         return new CacheDelta<>(data, deleted, version);
     }
 
     @Test
-    void initialVersionIsNull() {
+    void testInitialVersionIsNull() {
         assertNull(cache.getCurrentVersion());
     }
 
     @Test
-    void applyDeltaAddsEntitiesAndUpdatesVersion() {
-        var d = deltaWithData(List.of(new TestEntity("1", "A", 10)), 10);
-        cache.applyDeltaToCache(d);
+    void testAddSingleEntitySetsVersion() {
+        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "A", 10)), null, 10));
+
+        CacheDelta<TestEntity, Integer> delta = cache.getDelta(0);
         assertEquals(10, cache.getCurrentVersion());
-        assertEquals("A", cache.getById("1").getValue());
+        assertEquals(1, delta.data().size());
+        assertEquals("A", delta.data().get(0).getValue());
+        assertTrue(delta.deleted().isEmpty());
     }
 
     @Test
-    void applyDeltaUpdatesEntitiesAndVersion() {
-        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "A", 5)), 5));
-        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "B", 8)), 8));
-        assertEquals("B", cache.getById("1").getValue());
+    void testUpdateEntityIncreasesVersion() {
+        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "A", 5)), null, 5));
+        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "B", 8)), null, 8));
+
+        CacheDelta<TestEntity, Integer> delta = cache.getDelta(0);
         assertEquals(8, cache.getCurrentVersion());
+        assertEquals(1, delta.data().size());
+        assertEquals("B", delta.data().get(0).getValue());
+        assertTrue(delta.deleted().isEmpty());
     }
 
     @Test
-    void applyDeltaThrowsOnVersionRegressionForAdds() {
-        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "A", 10)), 10));
-        var ex = assertThrows(IllegalArgumentException.class,
-                () -> cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "B", 9)), 9)));
+    void testVersionRegressionOnUpdateThrows() {
+        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "A", 10)), null, 10));
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "A", 9)), null, 9)));
         assertTrue(ex.getMessage().contains("older than current"));
     }
 
     @Test
-    void applyDeltaAllowsEqualVersionForAdds() {
-        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "A", 10)), 10));
-        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "B", 10)), 10));
-        assertEquals("B", cache.getById("1").getValue());
+    void testVersionRegressionOnDeleteThrows() {
+        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "A", 10)), null, 10));
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> cache.applyDeltaToCache(deltaWithData(null, List.of("1"), 9)));
+        assertTrue(ex.getMessage().contains("older than current"));
     }
 
     @Test
-    void applyDeltaDeletesEntitiesAndUpdatesVersion() {
-        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "A", 3)), 3));
-        cache.applyDeltaToCache(deltaWithDeletes(List.of("1"), 4));
-        assertNull(cache.getById("1"));
-        assertTrue(cache.getDeletedFromVersion(0).contains("1"));
+    void testDeleteRemovesEntity() {
+        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "A", 3)), null, 3));
+        cache.applyDeltaToCache(deltaWithData(null, List.of("1"), 4));
+
+        CacheDelta<TestEntity, Integer> delta = cache.getDelta(0);
         assertEquals(4, cache.getCurrentVersion());
+        assertTrue(delta.deleted().contains("1"));
+        assertFalse(delta.data().stream().anyMatch(e -> e.getId().equals("1")));
+        assertNull(cache.getById("1"));
     }
 
     @Test
-    void applyDeltaThrowsOnVersionRegressionForDeletes() {
-        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "A", 10)), 10));
-        assertThrows(IllegalArgumentException.class,
-                () -> cache.applyDeltaToCache(deltaWithDeletes(List.of("1"), 9)));
-    }
+    void testDeleteNonExistentAddsToDeletedIndex() {
+        cache.applyDeltaToCache(deltaWithData(null, List.of("999"), 5));
 
-    @Test
-    void applyDeltaDeletesNonExistentAddsToDeletedIndex() {
-        cache.applyDeltaToCache(deltaWithDeletes(List.of("999"), 5));
-        assertTrue(cache.getDeletedFromVersion(0).contains("999"));
+        CacheDelta<TestEntity, Integer> delta = cache.getDelta(0);
         assertEquals(5, cache.getCurrentVersion());
+        assertTrue(delta.deleted().contains("999"));
     }
 
     @Test
-    void applyDeltaReAddsAfterDeleteRemovesFromDeletedIndex() {
-        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "A", 1)), 1));
-        cache.applyDeltaToCache(deltaWithDeletes(List.of("1"), 2));
-        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "B", 3)), 3));
+    void testReAddAfterDelete() {
+        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "A", 1)), null, 1));
+        cache.applyDeltaToCache(deltaWithData(null, List.of("1"), 2));
+        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "B", 3)), null, 3));
 
-        assertEquals("B", cache.getById("1").getValue());
-        assertFalse(cache.getDeletedFromVersion(0).contains("1"));
+        CacheDelta<TestEntity, Integer> delta = cache.getDelta(0);
         assertEquals(3, cache.getCurrentVersion());
+        assertFalse(delta.deleted().contains("1"));
+        assertEquals("B", cache.getById("1").getValue());
     }
 
     @Test
-    void applyDeltaWithMultipleEntitiesSameVersion() {
+    void testMultipleEntitiesSameVersion() {
         cache.applyDeltaToCache(deltaWithData(List.of(
                 new TestEntity("1", "A", 5),
-                new TestEntity("2", "B", 5)
-        ), 5));
-        var entities = cache.getEntitiesFromVersion(5);
-        assertEquals(2, entities.size());
+                new TestEntity("2", "B", 5)), null, 5));
+
+        CacheDelta<TestEntity, Integer> delta = cache.getDelta(0);
+        assertEquals(5, cache.getCurrentVersion());
+        assertEquals(2, delta.data().size());
     }
 
     @Test
-    void getEntitiesFromFutureVersionReturnsEmpty() {
-        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "A", 1)), 1));
-        assertTrue(cache.getEntitiesFromVersion(10).isEmpty());
+    void testGetDeltaFromFutureReturnsEmpty() {
+        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "A", 1)), null, 1));
+
+        CacheDelta<TestEntity, Integer> delta = cache.getDelta(10);
+        assertTrue(delta.data().isEmpty());
+        assertTrue(delta.deleted().isEmpty());
     }
 
     @Test
-    void multipleDeletesOnSameIdKeepOnlyLatest() {
-        cache.applyDeltaToCache(deltaWithDeletes(List.of("1"), 5));
-        cache.applyDeltaToCache(deltaWithDeletes(List.of("1"), 6));
+    void testDeletedRewrittenWithNewerVersion() {
+        cache.applyDeltaToCache(deltaWithData(null, List.of("1"), 5));
+        cache.applyDeltaToCache(deltaWithData(null, List.of("1"), 6)); // newer delete
 
-        assertEquals(List.of("1"), cache.getDeletedFromVersion(5));
-        assertEquals(List.of("1"), cache.getDeletedFromVersion(6));
-        assertTrue(cache.getDeletedFromVersion(7).isEmpty());
+        CacheDelta<TestEntity, Integer> delta = cache.getDelta(0);
+        assertEquals(1, delta.deleted().size());
+        assertEquals("1", delta.deleted().get(0));
     }
 
     @Test
-    void getDeletedFromVersionIsInclusive() {
-        cache.applyDeltaToCache(deltaWithDeletes(List.of("1"), 5));
-        assertTrue(cache.getDeletedFromVersion(5).contains("1"));
+    void testGetDeltaFromVersionBoundaryInclusive() {
+        cache.applyDeltaToCache(deltaWithData(null, List.of("1"), 5));
+
+        CacheDelta<TestEntity, Integer> delta = cache.getDelta(5);
+        assertTrue(delta.deleted().contains("1"));
     }
 
     @Test
-    void applyDeltaUpdatesVersionIndexCorrectly() {
-        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "A", 5)), 5));
-        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("2", "B", 10)), 10));
-        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "C", 12)), 12)); // update existing
+    void testAddUpdatesVersionIndexCorrectly() {
+        cache.applyDeltaToCache(deltaWithData(List.of(
+                new TestEntity("1", "A", 5),
+                new TestEntity("2", "B", 10)), null, 10));
+        cache.applyDeltaToCache(deltaWithData(List.of(
+                new TestEntity("1", "C", 12)), null, 12)); // update existing
 
-        var allEntities = cache.getEntitiesFromVersion(5);
-        assertEquals(2, allEntities.size());
-        assertTrue(allEntities.stream().anyMatch(e -> e.getValue().equals("B")));
-        assertTrue(allEntities.stream().anyMatch(e -> e.getValue().equals("C")));
+        CacheDelta<TestEntity, Integer> delta = cache.getDelta(5);
+        assertEquals(2, delta.data().size());
+        assertTrue(delta.data().stream().anyMatch(e -> e.getValue().equals("B")));
+        assertTrue(delta.data().stream().anyMatch(e -> e.getValue().equals("C")));
     }
 
     @Test
-    void updateAfterDeletionRemovesFromDeletedIndex() {
-        cache.applyDeltaToCache(deltaWithDeletes(List.of("1"), 5));
-        assertTrue(cache.getDeletedFromVersion(0).contains("1"));
+    void testMultipleDeletesSameIdKeepsOnlyLatest() {
+        cache.applyDeltaToCache(deltaWithData(null, List.of("1"), 5));
+        cache.applyDeltaToCache(deltaWithData(null, List.of("1"), 6));
 
-        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "Restored", 6)), 6));
-        assertFalse(cache.getDeletedFromVersion(0).contains("1"));
+        CacheDelta<TestEntity, Integer> deltaFrom5 = cache.getDelta(5);
+        assertEquals(List.of("1"), deltaFrom5.deleted());
+
+        CacheDelta<TestEntity, Integer> deltaFrom6 = cache.getDelta(6);
+        assertEquals(List.of("1"), deltaFrom6.deleted());
+
+        CacheDelta<TestEntity, Integer> deltaFrom7 = cache.getDelta(7);
+        assertTrue(deltaFrom7.deleted().isEmpty(), "No deletions after version 6");
+    }
+
+    @Test
+    void testUpdateAfterDeletionRemovesFromDeleted() {
+        cache.applyDeltaToCache(deltaWithData(null, List.of("1"), 5));
+        CacheDelta<TestEntity, Integer> deltaBefore = cache.getDelta(0);
+        assertTrue(deltaBefore.deleted().contains("1"));
+
+        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "Restored", 6)), null, 6));
+        CacheDelta<TestEntity, Integer> deltaAfter = cache.getDelta(0);
+        assertFalse(deltaAfter.deleted().contains("1"));
         assertEquals("Restored", cache.getById("1").getValue());
     }
 
     @Test
-    void getByIdReturnsNullForMissingEntity() {
-        assertNull(cache.getById("missing"));
+    void testGetByIdReturnsNullForMissing() {
+        assertNull(cache.getById("not-there"));
     }
 
     @Test
-    void reAddAfterDeleteRemovesFromDeletedIndex() {
-        cache.applyDeltaToCache(deltaWithDeletes(List.of("reAddMe"), 10));
-        assertTrue(cache.getDeletedFromVersion(0).contains("reAddMe"));
+    void testReAddAfterDeleteRemovesFromDeletedIndex() {
+        cache.applyDeltaToCache(deltaWithData(null, List.of("reAddMe"), 10));
+        CacheDelta<TestEntity, Integer> deltaBefore = cache.getDelta(0);
+        assertTrue(deltaBefore.deleted().contains("reAddMe"));
 
-        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("reAddMe", "I’m Back", 11)), 11));
-        assertFalse(cache.getDeletedFromVersion(0).contains("reAddMe"));
+        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("reAddMe", "I’m Back", 11)), null, 11));
+        CacheDelta<TestEntity, Integer> deltaAfter = cache.getDelta(0);
+        assertFalse(deltaAfter.deleted().contains("reAddMe"));
         assertEquals("I’m Back", cache.getById("reAddMe").getValue());
+    }
+
+    @Test
+    void testCheckVersionRejectsOlder() {
+        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "A", 10)), null, 10));
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "B", 9)), null, 9)));
+        assertTrue(ex.getMessage().contains("older than current"));
+    }
+
+    @Test
+    void testCheckVersionAcceptsEqualVersion() {
+        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "A", 10)), null, 10));
+        cache.applyDeltaToCache(deltaWithData(List.of(new TestEntity("1", "B", 10)), null, 10)); // equal version allowed
+
+        CacheDelta<TestEntity, Integer> delta = cache.getDelta(0);
+        assertEquals("B", cache.getById("1").getValue());
     }
 }

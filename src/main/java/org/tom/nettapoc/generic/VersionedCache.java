@@ -1,8 +1,8 @@
 package org.tom.nettapoc.generic;
 
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.locks.ReadWriteLock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.stream.Collectors;
 
 /**
@@ -17,12 +17,14 @@ import java.util.stream.Collectors;
  */
 public class VersionedCache<E extends VersionedEntity<V>, V extends Comparable<V>> {
 
-    private final Map<String, E> entitiesById = new ConcurrentHashMap<>();
-    private final NavigableMap<V, Set<String>> versionIndex = new ConcurrentSkipListMap<>();
+    private final Map<String, E> entitiesById = new HashMap<>();
+    private final NavigableMap<V, Set<String>> versionIndex = new TreeMap<>();
 
 
-    private final Map<String, V> deletedIdsToVersion = new ConcurrentHashMap<>();
-    private final NavigableMap<V, Set<String>> deletedIndex = new ConcurrentSkipListMap<>();
+    private final Map<String, V> deletedIdsToVersion = new HashMap<>();
+    private final NavigableMap<V, Set<String>> deletedIndex = new TreeMap<>();
+
+    private final ReadWriteLock rwLock = new ReentrantReadWriteLock(true);
 
     private volatile V currentVersion;
 
@@ -38,15 +40,20 @@ public class VersionedCache<E extends VersionedEntity<V>, V extends Comparable<V
         V responseVersion = delta.nextDataVersion();
         checkVersion(responseVersion);
 
-        if (delta.data() != null) {
-            delta.data().forEach(this::add);
-        }
+        rwLock.writeLock().lock();
+        try {
+            if (delta.data() != null) {
+                delta.data().forEach(this::add);
+            }
 
-        if (delta.deleted() != null) {
-            delta.deleted().forEach(id -> delete(id, responseVersion));
-        }
+            if (delta.deleted() != null) {
+                delta.deleted().forEach(id -> delete(id, responseVersion));
+            }
 
-        commit(responseVersion);
+            commit(responseVersion);
+        } finally {
+            rwLock.writeLock().unlock();
+        }
     }
 
     /**
@@ -59,7 +66,7 @@ public class VersionedCache<E extends VersionedEntity<V>, V extends Comparable<V
         removeFromCache(id);
 
         entitiesById.put(id, entity);
-        versionIndex.computeIfAbsent(entity.getDataVersion(), v -> ConcurrentHashMap.newKeySet()).add(id);
+        versionIndex.computeIfAbsent(entity.getDataVersion(), k -> new HashSet<>()).add(id);
     }
 
     /**
@@ -71,7 +78,7 @@ public class VersionedCache<E extends VersionedEntity<V>, V extends Comparable<V
         removeFromCache(id);
 
         deletedIdsToVersion.put(id, deletionVersion);
-        deletedIndex.computeIfAbsent(deletionVersion, v -> ConcurrentHashMap.newKeySet()).add(id);
+        deletedIndex.computeIfAbsent(deletionVersion, k -> new HashSet<>()).add(id);
     }
 
     private void removeFromCache(String id) {
@@ -96,7 +103,20 @@ public class VersionedCache<E extends VersionedEntity<V>, V extends Comparable<V
         }
     }
 
-    public List<E> getEntitiesFromVersion(V fromVersion) {
+    synchronized public CacheDelta<E, V> getDelta(V version) {
+        rwLock.readLock().lock();
+        try {
+            return new CacheDelta<>(
+                    getEntitiesFromVersion(version),
+                    getDeletedFromVersion(version),
+                    currentVersion
+            );
+        } finally {
+            rwLock.readLock().unlock();
+        }
+    }
+
+    private List<E> getEntitiesFromVersion(V fromVersion) {
         return versionIndex.tailMap(fromVersion, true).values().stream()
                 .flatMap(Set::stream)
                 .map(entitiesById::get)
@@ -104,7 +124,7 @@ public class VersionedCache<E extends VersionedEntity<V>, V extends Comparable<V
                 .collect(Collectors.toList());
     }
 
-    public List<String> getDeletedFromVersion(V fromVersion) {
+    private List<String> getDeletedFromVersion(V fromVersion) {
         return deletedIndex.tailMap(fromVersion, true).values().stream()
                 .flatMap(Set::stream)
                 .collect(Collectors.toList());
