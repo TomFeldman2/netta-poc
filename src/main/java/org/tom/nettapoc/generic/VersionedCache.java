@@ -103,7 +103,7 @@ public class VersionedCache<E extends VersionedEntity<V>, V extends Comparable<V
         }
     }
 
-    synchronized public CacheDelta<E, V> getDelta(V version) {
+    public CacheDelta<E, V> getDelta(V version) {
         rwLock.readLock().lock();
         try {
             return new CacheDelta<>(
